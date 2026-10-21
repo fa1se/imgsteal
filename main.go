@@ -214,6 +214,11 @@ func main() {
 	}
 
 	log.Printf("imgsteal listening on %s, %d referer rule(s) loaded", *listen, len(rules))
+	if *verbose {
+		for i, r := range rules {
+			log.Printf("  rule %d: match=%q referer=%s", i, r.re.String(), r.referer)
+		}
+	}
 	log.Fatal(http.ListenAndServe(*listen, h))
 }
 
