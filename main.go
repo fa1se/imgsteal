@@ -25,6 +25,9 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -59,20 +62,79 @@ type compiledRule struct {
 	referer string
 }
 
-func loadConfig(path string) ([]compiledRule, error) {
+// loadFileRules reads rules from a JSON config file. If the file is missing
+// and it was not explicitly requested (explicit == false), it is treated as
+// "no file rules" rather than an error, so the proxy can run from environment
+// variables alone.
+func loadFileRules(path string, explicit bool) ([]Rule, error) {
 	if path == "" {
 		return nil, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) && !explicit {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var c Config
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	rules := make([]compiledRule, 0, len(c.Rules))
-	for i, r := range c.Rules {
+	return c.Rules, nil
+}
+
+// envRules builds rules from IMGSTEAL_RULE_MATCH[_XXX] / IMGSTEAL_RULE_REFERER[_XXX]
+// environment variable pairs. The optional _XXX suffix pairs a match with its
+// referer; rules are ordered by that suffix (the unsuffixed one first).
+func envRules() ([]Rule, error) {
+	matches := map[string]string{}
+	referers := map[string]string{}
+	for _, kv := range os.Environ() {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch {
+		case k == "IMGSTEAL_RULE_MATCH":
+			matches[""] = v
+		case strings.HasPrefix(k, "IMGSTEAL_RULE_MATCH_"):
+			matches[strings.TrimPrefix(k, "IMGSTEAL_RULE_MATCH_")] = v
+		case k == "IMGSTEAL_RULE_REFERER":
+			referers[""] = v
+		case strings.HasPrefix(k, "IMGSTEAL_RULE_REFERER_"):
+			referers[strings.TrimPrefix(k, "IMGSTEAL_RULE_REFERER_")] = v
+		}
+	}
+
+	suffixes := make([]string, 0, len(matches))
+	for s := range matches {
+		suffixes = append(suffixes, s)
+	}
+	sort.Strings(suffixes)
+
+	rules := make([]Rule, 0, len(suffixes))
+	for _, s := range suffixes {
+		ref, ok := referers[s]
+		if !ok {
+			return nil, fmt.Errorf("IMGSTEAL_RULE_MATCH%s has no matching IMGSTEAL_RULE_REFERER%s", suffixTag(s), suffixTag(s))
+		}
+		rules = append(rules, Rule{Match: matches[s], Referer: ref})
+	}
+	return rules, nil
+}
+
+func suffixTag(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "_" + s
+}
+
+// compileRules compiles each rule's Match regex, preserving order.
+func compileRules(specs []Rule) ([]compiledRule, error) {
+	rules := make([]compiledRule, 0, len(specs))
+	for i, r := range specs {
 		re, err := regexp.Compile(r.Match)
 		if err != nil {
 			return nil, fmt.Errorf("rule %d (%q): %w", i, r.Match, err)
@@ -83,13 +145,54 @@ func loadConfig(path string) ([]compiledRule, error) {
 }
 
 func main() {
-	listen := flag.String("listen", ":8080", "address to listen on")
-	rulesPath := flag.String("rules", "rules.json", "path to JSON config with domain->referer rules")
-	timeout := flag.Duration("timeout", 30*time.Second, "upstream request timeout")
-	verbose := flag.Bool("v", false, "log each request (method, target, chosen referer, status, timing)")
+	listen := flag.String("listen", ":8080", "address to listen on (env IMGSTEAL_LISTEN)")
+	rulesPath := flag.String("rules", "rules.json", "path to JSON config with domain->referer rules; rules may also be set via IMGSTEAL_RULE_MATCH[_XXX] / IMGSTEAL_RULE_REFERER[_XXX] env pairs")
+	timeout := flag.Duration("timeout", 30*time.Second, "upstream request timeout (env IMGSTEAL_TIMEOUT)")
+	verbose := flag.Bool("v", false, "log each request (env IMGSTEAL_VERBOSE)")
 	flag.Parse()
 
-	rules, err := loadConfig(*rulesPath)
+	// Environment variables fill in values the user did not set explicitly on
+	// the command line; an explicit flag always wins.
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if !set["listen"] {
+		if v := os.Getenv("IMGSTEAL_LISTEN"); v != "" {
+			*listen = v
+		}
+	}
+	if !set["timeout"] {
+		if v := os.Getenv("IMGSTEAL_TIMEOUT"); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				log.Fatalf("IMGSTEAL_TIMEOUT: %v", err)
+			}
+			*timeout = d
+		}
+	}
+	if !set["v"] {
+		if v := os.Getenv("IMGSTEAL_VERBOSE"); v != "" {
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				log.Fatalf("IMGSTEAL_VERBOSE: %v", err)
+			}
+			*verbose = b
+		}
+	}
+
+	// Rules come from the JSON file (if present) followed by any defined via
+	// environment variables.
+	specs, err := loadFileRules(*rulesPath, set["rules"])
+	if err != nil {
+		log.Fatalf("rules: %v", err)
+	}
+	envSpecs, err := envRules()
+	if err != nil {
+		log.Fatalf("rules: %v", err)
+	}
+	specs = append(specs, envSpecs...)
+
+	rules, err := compileRules(specs)
 	if err != nil {
 		log.Fatalf("rules: %v", err)
 	}
