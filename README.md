@@ -10,22 +10,38 @@ is left untouched.
 GET /?url=https%3A%2F%2Fexample.com%2Fimage.jpg
 ```
 
+## Install
+
+```sh
+go install github.com/fa1se/imgsteal@latest
+```
+
 ## Run
 
 ```sh
-go run . -listen :8080 -rules rules.json -v
+imgsteal -listen :8080 -rules rules.json -v
 ```
 
 ### Flags
 
-| Flag       | Default      | Description                                  |
-| ---------- | ------------ | -------------------------------------------- |
-| `-listen`  | `:8080`      | address to listen on                         |
-| `-rules`   | `rules.json` | path to the JSON rules file (optional)       |
-| `-timeout` | `30s`        | upstream request timeout                     |
-| `-v`       | (not set)    | log loaded rules on startup and each request |
+| Flag       | Default      | Description                                      |
+| ---------- | ------------ | ------------------------------------------------ |
+| `-listen`  | `:8080`      | address to listen on                             |
+| `-rules`   | `rules.json` | path to the JSON [rules](#rules) file (optional) |
+| `-timeout` | `30s`        | upstream request timeout                         |
+| `-v`       | (not set)    | log loaded rules on startup and each request     |
 
 An explicit flag always wins over the corresponding environment variable.
+
+### Environment variables
+
+| Variable                      | Equivalent of      |
+| ----------------------------- | ------------------ |
+| `IMGSTEAL_LISTEN`             | `-listen`          |
+| `IMGSTEAL_TIMEOUT`            | `-timeout`         |
+| `IMGSTEAL_VERBOSE`            | `-v`               |
+| `IMGSTEAL_RULE_MATCH[_XXX]`   | a rule's `match`   |
+| `IMGSTEAL_RULE_REFERER[_XXX]` | a rule's `referer` |
 
 ## Rules
 
@@ -41,24 +57,6 @@ first, then environment).
     { "match": "(^|\\.)example\\.com$", "referer": "https://example.com/" }
   ]
 }
-```
-
-## Environment variables
-
-| Variable                      | Equivalent of      |
-| ----------------------------- | ------------------ |
-| `IMGSTEAL_LISTEN`             | `-listen`          |
-| `IMGSTEAL_TIMEOUT`            | `-timeout`         |
-| `IMGSTEAL_VERBOSE`            | `-v`               |
-| `IMGSTEAL_RULE_MATCH[_XXX]`   | a rule's `match`   |
-| `IMGSTEAL_RULE_REFERER[_XXX]` | a rule's `referer` |
-
-A rule is a `MATCH`/`REFERER` pair sharing the same optional `_XXX` suffix:
-
-```sh
-IMGSTEAL_RULE_MATCH='(^|\.)example\.com$' \
-IMGSTEAL_RULE_REFERER='https://example.com/' \
-imgsteal -v
 ```
 
 ## Container image
